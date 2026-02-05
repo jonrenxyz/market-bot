@@ -3,6 +3,7 @@ import feedparser
 import requests
 from datetime import datetime, timezone
 import re
+import json
 
 # ============================================
 # CONFIGURATION
@@ -11,146 +12,245 @@ TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHANNEL_ID = os.environ.get('TELEGRAM_CHANNEL_ID')
 GROQ_API_KEY = os.environ.get('GROQ_API_KEY')
 
-# Multiple RSS feeds for redundancy
+# ============================================
+# RSS FEEDS
+# ============================================
 RSS_FEEDS = [
     # Traditional Markets
     ("Reuters Business", "https://feeds.reuters.com/reuters/businessNews"),
     ("Reuters Markets", "https://feeds.reuters.com/reuters/marketsNews"),
     ("MarketWatch", "https://feeds.marketwatch.com/marketwatch/topstories/"),
-    ("CNBC Top News", "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114"),
+    ("CNBC", "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114"),
+    ("Yahoo Finance", "https://finance.yahoo.com/news/rssindex"),
+    ("Bloomberg", "https://feeds.bloomberg.com/markets/news.rss"),
     
     # Crypto News
     ("CoinDesk", "https://www.coindesk.com/arc/outboundfeeds/rss/"),
     ("Cointelegraph", "https://cointelegraph.com/rss"),
     ("Bitcoin Magazine", "https://bitcoinmagazine.com/.rss/full/"),
     ("Decrypt", "https://decrypt.co/feed"),
+    ("The Block", "https://www.theblock.co/rss.xml"),
 ]
 
-# Crypto prices API
-COINGECKO_API = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,solana,ripple&vs_currencies=usd&include_24hr_change=true"
+# ============================================
+# FETCH CRYPTO DATA (CoinGecko)
+# ============================================
+def fetch_crypto_data():
+    """Get comprehensive crypto data"""
+    try:
+        # Main coins
+        url = "https://api.coingecko.com/api/v3/coins/markets"
+        params = {
+            "vs_currency": "usd",
+            "ids": "bitcoin,ethereum,solana,ripple,binancecoin,cardano,dogecoin,avalanche-2,polkadot,chainlink",
+            "order": "market_cap_desc",
+            "price_change_percentage": "1h,24h,7d,30d"
+        }
+        response = requests.get(url, params=params, timeout=15)
+        
+        if response.status_code == 200:
+            return response.json()
+        return []
+    except Exception as e:
+        print(f"   Crypto data error: {e}")
+        return []
+
+def fetch_global_crypto_data():
+    """Get global crypto market data"""
+    try:
+        url = "https://api.coingecko.com/api/v3/global"
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200:
+            return response.json().get('data', {})
+        return {}
+    except Exception as e:
+        print(f"   Global crypto error: {e}")
+        return {}
+
+def fetch_fear_greed_index():
+    """Get crypto fear and greed index"""
+    try:
+        url = "https://api.alternative.me/fng/?limit=1"
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            if data.get('data'):
+                return data['data'][0]
+        return {}
+    except Exception as e:
+        print(f"   Fear/Greed error: {e}")
+        return {}
 
 # ============================================
-# FETCH NEWS FROM RSS FEEDS
+# FETCH NEWS
 # ============================================
 def fetch_rss_news():
-    """Fetch latest news from multiple RSS feeds"""
+    """Fetch latest news from RSS feeds"""
     all_articles = []
-    successful_feeds = 0
     
     for source_name, feed_url in RSS_FEEDS:
         try:
             feed = feedparser.parse(feed_url)
             if feed.entries:
-                successful_feeds += 1
-                for entry in feed.entries[:3]:
+                for entry in feed.entries[:4]:
                     summary = entry.get('summary', entry.get('description', ''))
-                    summary = re.sub(r'<[^>]+>', '', summary)
-                    summary = summary[:400] if summary else ''
+                    summary = re.sub(r'<[^>]+>', '', summary)[:500]
                     
                     article = {
                         "source": source_name,
-                        "title": entry.get('title', 'No title'),
+                        "title": entry.get('title', ''),
                         "summary": summary,
-                        "link": entry.get('link', ''),
                     }
                     all_articles.append(article)
-                print(f"   ✓ {source_name}: {len(feed.entries)} articles")
+                print(f"   ✓ {source_name}")
         except Exception as e:
             print(f"   ✗ {source_name}: {e}")
     
-    print(f"   Successfully fetched from {successful_feeds}/{len(RSS_FEEDS)} feeds")
     return all_articles
 
 # ============================================
-# FETCH CRYPTO PRICES
+# FORMAT CRYPTO DATA
 # ============================================
-def fetch_crypto_prices():
-    """Get current crypto prices from CoinGecko"""
-    try:
-        response = requests.get(COINGECKO_API, timeout=10)
-        if response.status_code == 200:
-            data = response.json()
-            prices = []
-            coin_symbols = {
-                'bitcoin': 'BTC',
-                'ethereum': 'ETH', 
-                'solana': 'SOL',
-                'ripple': 'XRP'
-            }
-            for coin, info in data.items():
-                price = info.get('usd', 0)
-                change = info.get('usd_24h_change', 0)
-                symbol = coin_symbols.get(coin, coin.upper()[:3])
-                direction = "🟢" if change >= 0 else "🔴"
-                prices.append(f"{symbol}: ${price:,.2f} {direction} {change:+.1f}%")
-            return prices
-        return []
-    except Exception as e:
-        print(f"   Crypto prices error: {e}")
-        return []
+def format_crypto_section(crypto_data, global_data, fear_greed):
+    """Format crypto data into readable text"""
+    
+    crypto_text = ""
+    
+    # Main prices
+    for coin in crypto_data:
+        symbol = coin.get('symbol', '').upper()
+        price = coin.get('current_price', 0)
+        change_24h = coin.get('price_change_percentage_24h', 0) or 0
+        change_7d = coin.get('price_change_percentage_7d_in_currency', 0) or 0
+        change_30d = coin.get('price_change_percentage_30d_in_currency', 0) or 0
+        market_cap = coin.get('market_cap', 0)
+        
+        direction = "🟢" if change_24h >= 0 else "🔴"
+        
+        if symbol in ['BTC', 'ETH', 'SOL', 'XRP', 'BNB']:
+            crypto_text += f"• {symbol}: ${price:,.2f} {direction} {change_24h:+.2f}% (24h) | {change_7d:+.1f}% (7d) | {change_30d:+.1f}% (30d)\n"
+            if market_cap:
+                crypto_text += f"  Market Cap: ${market_cap/1e9:.1f}B\n"
+    
+    # Global data
+    if global_data:
+        total_mcap = global_data.get('total_market_cap', {}).get('usd', 0)
+        mcap_change = global_data.get('market_cap_change_percentage_24h_usd', 0)
+        btc_dom = global_data.get('market_cap_percentage', {}).get('btc', 0)
+        
+        crypto_text += f"\n📊 Total Crypto Market Cap: ${total_mcap/1e12:.2f}T ({mcap_change:+.2f}% 24h)\n"
+        crypto_text += f"📊 BTC Dominance: {btc_dom:.1f}%\n"
+    
+    # Fear & Greed
+    if fear_greed:
+        value = fear_greed.get('value', 'N/A')
+        classification = fear_greed.get('value_classification', 'N/A')
+        crypto_text += f"📊 Fear & Greed Index: {value} ({classification})\n"
+    
+    return crypto_text
 
 # ============================================
-# SUMMARIZE WITH GROQ AI
+# GENERATE AI SUMMARY
 # ============================================
-def summarize_with_ai(articles, crypto_prices):
-    """Use Groq AI to create intelligent market summary"""
+def generate_comprehensive_summary(articles, crypto_data, global_data, fear_greed):
+    """Use Groq AI to generate comprehensive market summary"""
     
-    # Separate traditional and crypto news
-    crypto_keywords = ['coin', 'crypto', 'bitcoin', 'decrypt', 'block', 'defi', 'token', 'eth']
-    trad_news = [a for a in articles if not any(kw in a['source'].lower() for kw in crypto_keywords)]
-    crypto_news = [a for a in articles if a not in trad_news]
+    # Prepare crypto data text
+    crypto_info = format_crypto_section(crypto_data, global_data, fear_greed)
+    
+    # Separate news
+    crypto_keywords = ['bitcoin', 'crypto', 'ethereum', 'btc', 'eth', 'token', 'defi', 'blockchain', 'coinbase', 'binance']
+    
+    trad_articles = []
+    crypto_articles = []
+    
+    for a in articles:
+        text = (a['title'] + ' ' + a['summary']).lower()
+        if any(kw in text for kw in crypto_keywords):
+            crypto_articles.append(a)
+        else:
+            trad_articles.append(a)
     
     # Build news text
-    news_text = "\n=== TRADITIONAL MARKETS ===\n"
-    for i, article in enumerate(trad_news[:8], 1):
-        news_text += f"{i}. [{article['source']}] {article['title']}\n"
-        if article['summary']:
-            news_text += f"   {article['summary'][:200]}\n"
+    trad_news = "\n".join([f"- [{a['source']}] {a['title']}: {a['summary'][:200]}" for a in trad_articles[:15]])
+    crypto_news = "\n".join([f"- [{a['source']}] {a['title']}: {a['summary'][:200]}" for a in crypto_articles[:10]])
     
-    news_text += "\n=== CRYPTO NEWS ===\n"
-    for i, article in enumerate(crypto_news[:8], 1):
-        news_text += f"{i}. [{article['source']}] {article['title']}\n"
-        if article['summary']:
-            news_text += f"   {article['summary'][:200]}\n"
-    
-    crypto_price_text = "\n".join(crypto_prices) if crypto_prices else "Prices unavailable"
-    
-    # Get time of day for GMT+8
+    # Get time
     utc_now = datetime.now(timezone.utc)
     gmt8_hour = (utc_now.hour + 8) % 24
+    time_str = f"{gmt8_hour}:00"
+    date_str = datetime.now().strftime('%B %d, %Y')
     time_of_day = "Morning" if gmt8_hour < 12 else "Evening"
     
-    prompt = f"""You are a professional financial analyst creating a daily market briefing.
+    prompt = f"""You are a senior financial analyst creating a comprehensive daily market briefing. 
 
-CURRENT CRYPTO PRICES:
-{crypto_price_text}
+CURRENT CRYPTO DATA:
+{crypto_info}
 
-TODAY'S NEWS:
-{news_text}
+TRADITIONAL MARKET NEWS:
+{trad_news}
 
-Create a market update with this EXACT format:
+CRYPTO NEWS:
+{crypto_news}
 
-📊 DAILY MARKET PULSE
-{time_of_day} Edition • {datetime.now().strftime('%A, %B %d, %Y')}
+Create a DETAILED market report using this EXACT format. Be specific with numbers, percentages, and analysis:
 
-━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 MARKET PULSE - {time_of_day} Edition
+{date_str} | {time_str} GMT+8
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-🏛️ TRADITIONAL MARKETS
-• [Write 2-3 bullet points about major stock/economic moves]
+🏛️ STOCK MARKETS
 
-💰 CRYPTO & WEB3
-• [Write 2-3 bullet points about crypto news]
-• Include BTC, ETH prices with 24h changes
+US Futures (Current):
+• S&P 500 Futures: [estimate based on news sentiment]
+• Nasdaq Futures: [estimate based on news sentiment]
+• Dow Futures: [estimate based on news sentiment]
+
+Key Market Moves:
+[Analyze the news and identify 3-4 major stock stories - earnings, major moves, sector rotation]
+
+Winners Today:
+• [List 2-3 stocks that are up with reasons]
+
+Losers Today:
+• [List 2-3 stocks that are down with reasons]
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+💰 CRYPTO MARKETS
+
+Current Prices:
+{crypto_info}
+
+Why Crypto is Moving:
+[Analyze crypto news and list 3-4 key reasons for current price action]
+
+Key Levels to Watch:
+• Bitcoin: [identify support/resistance levels based on price]
+• Ethereum: [identify support/resistance levels based on price]
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 📈 KEY INSIGHTS
-• [Write 2-3 actionable insights for traders]
+
+[Write 3-4 actionable insights combining both traditional and crypto markets. What should traders watch? What's the sentiment? Any opportunities?]
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 ⚠️ WATCH TODAY
-• [1-2 things to monitor]
 
-━━━━━━━━━━━━━━━━━━━━
+• [List 2-3 specific events/earnings/data releases to watch]
 
-Keep it professional and concise. Be specific with numbers."""
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📝 BOTTOM LINE
+
+[Write a 2-3 sentence summary of overall market sentiment and what traders should focus on]
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Be specific with numbers. Use actual data provided. Make it actionable for traders."""
 
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
@@ -160,11 +260,11 @@ Keep it professional and concise. Be specific with numbers."""
     data = {
         "model": "llama-3.1-70b-versatile",
         "messages": [
-            {"role": "system", "content": "You are a professional financial market analyst."},
+            {"role": "system", "content": "You are a senior financial analyst at a major investment bank. Provide detailed, data-driven market analysis. Always be specific with numbers and percentages. Your audience is active traders and investors."},
             {"role": "user", "content": prompt}
         ],
         "temperature": 0.7,
-        "max_tokens": 1500
+        "max_tokens": 3000
     }
     
     try:
@@ -172,131 +272,155 @@ Keep it professional and concise. Be specific with numbers."""
             "https://api.groq.com/openai/v1/chat/completions",
             headers=headers,
             json=data,
-            timeout=60
+            timeout=90
         )
         response.raise_for_status()
         result = response.json()
         return result['choices'][0]['message']['content']
     except Exception as e:
-        print(f"AI summarization error: {e}")
-        return create_fallback_summary(articles, crypto_prices)
+        print(f"AI error: {e}")
+        return create_fallback_summary(crypto_data, global_data, fear_greed, articles)
 
-def create_fallback_summary(articles, crypto_prices):
+def create_fallback_summary(crypto_data, global_data, fear_greed, articles):
     """Fallback if AI fails"""
+    
     utc_now = datetime.now(timezone.utc)
     gmt8_hour = (utc_now.hour + 8) % 24
     time_of_day = "Morning" if gmt8_hour < 12 else "Evening"
-    today = datetime.now().strftime('%A, %B %d, %Y')
+    date_str = datetime.now().strftime('%B %d, %Y')
     
-    message = f"""📊 DAILY MARKET PULSE
-{time_of_day} Edition • {today}
+    msg = f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 MARKET PULSE - {time_of_day} Edition
+{date_str} | {gmt8_hour}:00 GMT+8
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-━━━━━━━━━━━━━━━━━━━━
+💰 CRYPTO PRICES
 
 """
     
-    if crypto_prices:
-        message += "💰 CRYPTO PRICES\n"
-        for price in crypto_prices:
-            message += f"• {price}\n"
-        message += "\n"
+    for coin in crypto_data[:6]:
+        symbol = coin.get('symbol', '').upper()
+        price = coin.get('current_price', 0)
+        change_24h = coin.get('price_change_percentage_24h', 0) or 0
+        direction = "🟢" if change_24h >= 0 else "🔴"
+        msg += f"• {symbol}: ${price:,.2f} {direction} {change_24h:+.2f}%\n"
     
-    message += "📰 TOP HEADLINES\n\n"
+    if global_data:
+        total_mcap = global_data.get('total_market_cap', {}).get('usd', 0)
+        msg += f"\n📊 Total Market Cap: ${total_mcap/1e12:.2f}T\n"
     
-    seen_titles = set()
+    if fear_greed:
+        msg += f"📊 Fear & Greed: {fear_greed.get('value', 'N/A')} ({fear_greed.get('value_classification', 'N/A')})\n"
+    
+    msg += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n📰 TOP HEADLINES\n\n"
+    
+    seen = set()
     count = 0
-    for article in articles:
-        if count >= 10:
+    for a in articles:
+        if count >= 8:
             break
-        title_lower = article['title'].lower()
-        if title_lower not in seen_titles:
-            seen_titles.add(title_lower)
-            message += f"• [{article['source']}] {article['title']}\n\n"
+        if a['title'].lower() not in seen:
+            seen.add(a['title'].lower())
+            msg += f"• {a['title']}\n"
             count += 1
     
-    message += "━━━━━━━━━━━━━━━━━━━━"
+    msg += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     
-    return message
+    return msg
 
 # ============================================
 # SEND TO TELEGRAM
 # ============================================
 def send_to_telegram(message):
-    """Send message to Telegram channel"""
+    """Send message to Telegram (split if too long)"""
     
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     
+    # Telegram limit is 4096 chars - split if needed
+    messages = []
     if len(message) > 4000:
-        message = message[:4000] + "\n\n... [truncated]"
+        # Split at section breaks
+        parts = message.split('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
+        current = ""
+        for part in parts:
+            if len(current) + len(part) + 35 < 4000:
+                current += part + '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
+            else:
+                if current:
+                    messages.append(current.strip('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━').strip())
+                current = part + '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
+        if current:
+            messages.append(current.strip('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━').strip())
+    else:
+        messages = [message]
     
-    payload = {
-        "chat_id": TELEGRAM_CHANNEL_ID,
-        "text": message,
-        "disable_web_page_preview": True
-    }
+    success = True
+    for i, msg in enumerate(messages):
+        payload = {
+            "chat_id": TELEGRAM_CHANNEL_ID,
+            "text": msg,
+            "disable_web_page_preview": True
+        }
+        
+        try:
+            response = requests.post(url, json=payload, timeout=30)
+            if response.status_code == 200:
+                print(f"✅ Message {i+1}/{len(messages)} sent!")
+            else:
+                print(f"❌ Error: {response.text}")
+                success = False
+        except Exception as e:
+            print(f"❌ Error: {e}")
+            success = False
     
-    try:
-        response = requests.post(url, json=payload, timeout=30)
-        if response.status_code == 200:
-            print("✅ Message sent successfully to Telegram!")
-            return True
-        else:
-            print(f"❌ Telegram error: {response.text}")
-            return False
-    except Exception as e:
-        print(f"❌ Telegram error: {e}")
-        return False
+    return success
 
 # ============================================
-# MAIN EXECUTION
+# MAIN
 # ============================================
 def main():
     print("🚀 Starting Market Updates Bot...")
     print(f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}")
     
-    # Validate environment variables
-    missing = []
-    if not TELEGRAM_BOT_TOKEN:
-        missing.append("TELEGRAM_BOT_TOKEN")
-    if not TELEGRAM_CHANNEL_ID:
-        missing.append("TELEGRAM_CHANNEL_ID")
-    if not GROQ_API_KEY:
-        missing.append("GROQ_API_KEY")
-    
-    if missing:
-        print(f"❌ Missing environment variables: {', '.join(missing)}")
+    # Validate env vars
+    if not all([TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, GROQ_API_KEY]):
+        print("❌ Missing environment variables!")
         return
     
-    print("✓ All environment variables present")
+    print("✓ Environment variables OK")
     
-    # Fetch news
-    print("\n📰 Fetching news from RSS feeds...")
+    # Fetch all data
+    print("\n📰 Fetching news...")
     articles = fetch_rss_news()
-    print(f"   Total articles: {len(articles)}")
+    print(f"   Total: {len(articles)} articles")
     
-    # Fetch crypto prices
-    print("\n💰 Fetching crypto prices...")
-    crypto_prices = fetch_crypto_prices()
-    if crypto_prices:
-        print(f"   {', '.join(crypto_prices)}")
+    print("\n💰 Fetching crypto data...")
+    crypto_data = fetch_crypto_data()
+    print(f"   Got {len(crypto_data)} coins")
     
-    if not articles and not crypto_prices:
-        print("❌ No data found!")
-        return
+    print("\n🌍 Fetching global crypto data...")
+    global_data = fetch_global_crypto_data()
     
-    # Generate AI summary
-    print("\n🤖 Generating AI summary...")
-    summary = summarize_with_ai(articles, crypto_prices)
+    print("\n😱 Fetching Fear & Greed Index...")
+    fear_greed = fetch_fear_greed_index()
+    if fear_greed:
+        print(f"   Index: {fear_greed.get('value')} ({fear_greed.get('value_classification')})")
+    
+    # Generate summary
+    print("\n🤖 Generating comprehensive summary...")
+    summary = generate_comprehensive_summary(articles, crypto_data, global_data, fear_greed)
     
     # Preview
-    print("\n📝 Preview:")
-    print("-" * 40)
-    print(summary[:500] + "..." if len(summary) > 500 else summary)
-    print("-" * 40)
+    print("\n📝 Preview (first 800 chars):")
+    print("-" * 50)
+    print(summary[:800])
+    print("-" * 50)
     
-    # Send to Telegram
+    # Send
     print("\n📤 Sending to Telegram...")
     send_to_telegram(summary)
+    
+    print("\n✅ Done!")
 
 if __name__ == "__main__":
     main()
