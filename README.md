@@ -17,7 +17,7 @@ ANTHROPIC_API_KEY=your_key
 
 3. Run:
 ```bash
-python bot.py
+python market_bot.py
 ```
 
 ## Commands
