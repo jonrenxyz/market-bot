@@ -1,3 +1,31 @@
 anthropic>=0.39.0
 pyTelegramBotAPI>=4.14.0
 python-dotenv>=1.0.0
+requests>=2.31.0
+```
+
+#### **E. Create `.gitignore`**
+```
+# Environment variables
+.env
+*.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
